@@ -42,7 +42,8 @@
     three_nodes_cluster_changes/1,
     three_nodes_cluster_conflicts/1,
     three_nodes_custom_event_handler_reg_unreg/1,
-    three_nodes_custom_event_handler_conflict_resolution/1
+    three_nodes_custom_event_handler_conflict_resolution/1,
+    three_nodes_gen_server_with_via_tuple/1
 ]).
 -export([
     four_nodes_concurrency/1
@@ -94,7 +95,8 @@ groups() ->
             three_nodes_cluster_changes,
             three_nodes_cluster_conflicts,
             three_nodes_custom_event_handler_reg_unreg,
-            three_nodes_custom_event_handler_conflict_resolution
+            three_nodes_custom_event_handler_conflict_resolution,
+            three_nodes_gen_server_with_via_tuple
         ]},
         {four_nodes_registry, [shuffle], [
             four_nodes_concurrency
@@ -1431,6 +1433,68 @@ three_nodes_custom_event_handler_conflict_resolution(Config) ->
         true,
         fun() -> rpc:call(SlaveNode2, erlang, is_process_alive, [PidOn2]) end
     ).
+
+three_nodes_gen_server_with_via_tuple(Config) ->
+    %% get slaves
+    SlaveNode1 = proplists:get_value(syn_slave_1, Config),
+    SlaveNode2 = proplists:get_value(syn_slave_2, Config),
+
+    %% Simulate a node start in a netsplit
+    rpc:call(SlaveNode1, syn_test_suite_helper, disconnect_node, [SlaveNode2]),
+    syn_test_suite_helper:assert_cluster(node(), [SlaveNode1, SlaveNode2]),
+    syn_test_suite_helper:assert_cluster(SlaveNode1, [node()]),
+    syn_test_suite_helper:assert_cluster(SlaveNode2, [node()]),
+
+    %% Start syn on slaves
+    ok = rpc:call(SlaveNode1, syn, start, []),
+    ok = rpc:call(SlaveNode2, syn, start, []),
+
+    %% Add an event handler that will ask the duplicate process to stop with
+    %% proc_lib:stop/3
+    rpc:call(SlaveNode1, syn, set_event_handler, [syn_test_event_handler_resolution_stop]),
+    rpc:call(SlaveNode2, syn, set_event_handler, [syn_test_event_handler_resolution_stop]),
+
+    %% Add the scope to slaves
+    ok = rpc:call(SlaveNode1, syn, add_node_to_scopes, [[scope_slaves]]),
+    ok = rpc:call(SlaveNode2, syn, add_node_to_scopes, [[scope_slaves]]),
+
+    %% Start gen server via syn on both nodes
+    GenServerNameCustom = {scope_slaves, <<"my gs">>},
+    TupleCustom = {via, syn, GenServerNameCustom},
+    {ok, Pid1} = rpc:call(SlaveNode1, syn_test_gen_server, start, [TupleCustom]),
+    {ok, Pid2} = rpc:call(SlaveNode2, syn_test_gen_server, start, [TupleCustom]),
+
+    %% Both servers are alive
+    pong = syn_test_gen_server:ping(Pid1),
+    pong = syn_test_gen_server:ping(Pid2),
+
+    %% Both servers can be resolved on their home node
+    Pid1 = rpc:call(SlaveNode1, syn, whereis_name, [GenServerNameCustom]),
+    Pid2 = rpc:call(SlaveNode2, syn, whereis_name, [GenServerNameCustom]),
+
+    %% Connect the two nodes and wait a little for the conflict resolution
+    rpc:call(SlaveNode1, syn_test_suite_helper, connect_node, [SlaveNode2]),
+    syn_test_suite_helper:assert_cluster(node(), [SlaveNode1, SlaveNode2]),
+    syn_test_suite_helper:assert_cluster(SlaveNode1, [node(), SlaveNode2]),
+    syn_test_suite_helper:assert_cluster(SlaveNode2, [node(), SlaveNode1]),
+
+    timer:sleep(2000),
+
+    %% Assert one server was shutdown
+    case {catch syn_test_gen_server:ping(Pid1), catch syn_test_gen_server:ping(Pid2)}
+        of {pong, {'EXIT',{noproc,{gen_server,call,_}}}} -> ok
+         ; {{'EXIT',{noproc,{gen_server,call,_}}}, pong} -> ok
+         ; {pong, pong} -> ct:fail("one process was not shutdown")
+    end,
+
+    Resolve1 = rpc:call(SlaveNode1, syn, whereis_name, [GenServerNameCustom]),
+    Resolve2 = rpc:call(SlaveNode2, syn, whereis_name, [GenServerNameCustom]),
+
+    case {Resolve1, Resolve2}
+        of {Same, Same} -> ok
+         ; {undefined, Pid} when is_pid(Pid) -> ct:fail("node ~p could not resolve ~p", [SlaveNode1, GenServerNameCustom])
+         ; {Pid, undefined} when is_pid(Pid) -> ct:fail("node ~p could not resolve ~p", [SlaveNode2, GenServerNameCustom])
+    end.
 
 four_nodes_concurrency(Config) ->
     %% get slaves

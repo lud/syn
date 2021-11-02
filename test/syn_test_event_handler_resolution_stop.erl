@@ -23,47 +23,15 @@
 %% OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 %% THE SOFTWARE.
 %% ==========================================================================================================
--module(syn_test_gen_server).
--behaviour(gen_server).
+-module(syn_test_event_handler_resolution_stop).
+-behaviour(syn_event_handler).
 
-%% API
--export([start_link/1,start/1]).
--export([ping/1]).
--export([stop/1]).
+-export([resolve_registry_conflict/4]).
 
-%% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+resolve_registry_conflict(_Scope, _Name, {Pid1, _, Time1}, {Pid2, _, Time2}) when Time1 > Time2 ->
+    ok = proc_lib:stop(Pid1),
+    Pid2;
 
-start_link(Tuple) ->
-    gen_server:start_link(Tuple, ?MODULE, [], []).
-
-start(Tuple) ->
-    gen_server:start(Tuple, ?MODULE, [], []).
-
-ping(Tuple) ->
-    gen_server:call(Tuple, ping).
-
-stop(Tuple) ->
-    gen_server:cast(Tuple, stop).
-
-init(State) ->
-    {ok, State}.
-
-handle_call(ping, _From, State) ->
-    {reply, pong, State}.
-
-handle_cast(stop, State) ->
-    {stop, normal, State};
-
-handle_cast(_Msg, State) ->
-    {noreply, State}.
-
-handle_info({SenderPid, send_ping}, State) ->
-    SenderPid ! reply_pong,
-    {noreply, State}.
-
-terminate(_Reason, _State) ->
-    ok.
-
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+resolve_registry_conflict(_Scope, _Name, {Pid1, _, Time1}, {Pid2, _, Time2}) when Time1 < Time2 ->
+    ok = proc_lib:stop(Pid2),
+    Pid1.
